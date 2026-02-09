@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Captain Theis: Pirate Edition</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: 'Segoe UI', sans-serif; }
+        #gameCanvas { display: block; width: 100%; height: 100%; }
+        
+        /* HUD */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; display: flex; flex-direction: column; justify-content: space-between;
+        }
+        
+        /* Top HUD */
+        .hud-top {
+            display: flex; justify-content: space-between; padding: 20px; width: 100%; box-sizing: border-box;
+        }
+        
+        .hud-box {
+            background: rgba(60, 40, 20, 0.8); /* Wood-ish dark */
+            padding: 10px 20px; border-radius: 8px;
+            border: 2px solid #d4af37; /* Gold border */
+            color: #d4af37; font-weight: bold;
+            font-size: 24px; text-shadow: 2px 2px 0px #000;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+
+        /* Minimap */
+        #minimap-container {
+            position: absolute; bottom: 20px; left: 20px;
+            width: 200px; height: 200px;
+            background: #e6d5ac; /* Parchment */
+            border: 4px solid #5d4037;
+            border-radius: 50%; /* Compass style */
+            overflow: hidden;
+            box-shadow: 0 0 15px rgba(0,0,0,0.5);
+            pointer-events: none;
+        }
+        #minimap { width: 100%; height: 100%; display: block; }
+        
+        /* Mobile Controls */
+        #mobile-controls {
+            position: absolute; bottom: 20px; right: 20px;
+            display: none; pointer-events: none;
+            flex-direction: row; gap: 20px;
+        }
+        @media (hover: none) and (pointer: coarse) { #mobile-controls { display: flex; } }
+        
+        .control-btn {
+            pointer-events: auto; background: rgba(255,255,255,0.2);
+            border: 2px solid rgba(255,255,255,0.5); border-radius: 50%;
+            width: 70px; height: 70px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 30px; color: white; user-select: none;
+        }
+        #btn-thrust { background: rgba(0,255,0,0.2); border-color: #00ff00; }
+        
+        /* Screens */
+        .screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.85); display: flex; flex-direction: column;
+            align-items: center; justify-content: center; pointer-events: auto;
+            z-index: 10; transition: opacity 0.5s;
+        }
+        .hidden { opacity: 0; pointer-events: none; }
+        
+        h1 { 
+            color: #d4af37; font-size: 56px; text-align: center; margin-bottom: 10px; 
+            text-shadow: 0 4px 0 #5d4037; font-family: 'Georgia', serif;
+        }
+        p { color: #f0e68c; font-size: 22px; text-align: center; max-width: 600px; line-height: 1.6; margin-bottom: 30px; }
+        
+        button {
+            padding: 15px 50px; font-size: 24px; 
+            background: linear-gradient(#d4af37, #aa8c2c);
+            color: #3e2723; font-weight: bold;
+            border: 2px solid #fff; border-radius: 8px; cursor: pointer; 
+            box-shadow: 0 5px 0 #5d4037;
+        }
+        button:active { transform: translateY(4px); box-shadow: 0 2px 0 #5d4037; }
+
+        #damage-flash {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: red; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+        }
+    </style>
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+    <div id="damage-flash"></div>
+
+    <!-- HUD -->
+    <div id="ui-layer">
+        <div class="hud-top">
+            <div class="hud-box"><span id="timer">⏱ 90s</span></div>
+            <div class="hud-box"><span id="speed-gauge">0.0 kts</span></div>
+        </div>
+        
+        <div id="minimap-container">
+            <canvas id="minimap" width="200" height="200"></canvas>
+        </div>
+
+        <div id="mobile-controls">
+            <div id="btn-left" class="control-btn">↺</div>
+            <div id="btn-right" class="control-btn">↻</div>
+            <div id="btn-thrust" class="control-btn">↑</div>
+        </div>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="start-screen" class="screen">
+        <h1>Captain Theis</h1>
+        <p>Ahoy Captain!<br><br>
+        Sail to <strong>Skilsø Pirate Island</strong> (North).<br>
+        The ocean is rough and the Pirates are aggressive!<br>
+        Watch the map and keep your powder dry.<br><br>
+        <em>Use Arrow Keys to Steer</em></p>
+        <button id="start-btn">Set Sail</button>
+    </div>
+
+    <!-- Game Over -->
+    <div id="game-over-screen" class="screen hidden">
+        <h1 style="color: #ff4757">Man Overboard!</h1>
+        <p id="go-message">Mission Failed.</p>
+        <button id="retry-btn">Try Again</button>
+    </div>
+
+<script>
+    // --- 1. SETUP & GLOBALS ---
+    let scene, camera, renderer;
+    let minimapCtx = document.getElementById('minimap').getContext('2d');
+    let clock = new THREE.Clock();
+    let gameRunning = false;
+    let gameWon = false;
+    let timeLeft = 90;
+    let timerInterval;
+
+    // Game Objects
+    let playerShip, water;
+    let chestGroup, chestLid, chestText;
+    let obstacles = [];
+    let pirates = [];
+    let cannonballs = [];
+    let clouds = [];
+    let seagulls = [];
+    let wakeParticles = []; // For stern wave
+    
+    // Map Config - Larger world
+    let mapSize = 1500; 
+    
+    let dockArea = { x: 0, z: -800, width: 80, depth: 100 }; // Skilsø is far North
+
+    // Physics
+    const shipStats = {
+        speed: 0,
+        maxSpeed: 1.4,
+        rotationSpeed: 0.015,
+        acceleration: 0.01,
+        friction: 0.985,
+        angle: 0
+    };
+
+    const keys = { up: false, left: false, right: false };
+
+    function init() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 200, 1500);
+
+        camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 4000);
+        
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        document.body.appendChild(renderer.domElement);
+
+        // Sun
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xfff0dd, 0.9);
+        dirLight.position.set(300, 500, 300);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.camera.near = 0.5;
+        dirLight.shadow.camera.far = 2000;
+        dirLight.shadow.camera.left = -1000;
+        dirLight.shadow.camera.right = 1000;
+        dirLight.shadow.camera.top = 1000;
+        dirLight.shadow.camera.bottom = -1000;
+        scene.add(dirLight);
+
+        // Stylized Water - Segmented for wave animation
+        const waterGeo = new THREE.PlaneGeometry(4000, 4000, 100, 100);
+        waterGeo.rotateX(-Math.PI / 2);
+        waterGeo.userData = { originalPosition: waterGeo.attributes.position.clone() };
+        
+        const waterMat = new THREE.MeshPhongMaterial({
+            color: 0x1e88e5,
+            shininess: 90,
+            flatShading: true,
+            transparent: true,
+            opacity: 0.9,
+            specular: 0x111111
+        });
+        water = new THREE.Mesh(waterGeo, waterMat);
+        water.receiveShadow = true;
+        scene.add(water);
+
+        createPlayerShip();
+        createEnvironment();
+
+        window.addEventListener('resize', onWindowResize, false);
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('keyup', onKeyUp);
+        
+        setupTouch('btn-thrust', 'up');
+        setupTouch('btn-left', 'left');
+        setupTouch('btn-right', 'right');
+
+        animate();
+    }
+
+    // --- SHIP CONSTRUCTION ---
+    function createShipMesh(isPlayer) {
+        const group = new THREE.Group();
+        group.scale.set(1.5, 1.5, 1.5); 
+
+        const colors = {
+            woodDark: isPlayer ? 0x4E342E : 0x212121,
+            woodMedium: isPlayer ? 0x795548 : 0x3E2723,
+            woodLight: isPlayer ? 0xA1887F : 0x4E342E,
+            sail: isPlayer ? 0xeeeeee : 0x222222,
+            trim: isPlayer ? 0xFFD700 : 0x5D4037 
+        };
+
+        const matWoodDark = new THREE.MeshStandardMaterial({ color: colors.woodDark, roughness: 0.9 });
+        const matWoodMed = new THREE.MeshStandardMaterial({ color: colors.woodMedium, roughness: 0.8 });
+        const matWoodLight = new THREE.MeshStandardMaterial({ color: colors.woodLight, roughness: 0.7 });
+        const matSail = new THREE.MeshStandardMaterial({ color: colors.sail, side: THREE.DoubleSide, roughness: 0.6 });
+        const matTrim = new THREE.MeshStandardMaterial({ color: colors.trim, roughness: 0.4, metalness: isPlayer ? 0.6 : 0.1 });
+        const matCannon = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.5, metalness: 0.5 });
+        const matRope = new THREE.LineBasicMaterial({ color: 0x222222 });
+
+        const shipGeo = new THREE.Group();
+        // If Player, rotate 180 to face forward relative to controls
+        shipGeo.rotation.y = isPlayer ? Math.PI : 0; 
+        group.add(shipGeo);
+
+        // Deform helper with smoother interpolation
+        function deformGeometry(geo, isBow) {
+            const pos = geo.attributes.position;
+            geo.computeBoundingBox();
+            const minZ = geo.boundingBox.min.z;
+            const maxZ = geo.boundingBox.max.z;
+            const len = maxZ - minZ;
+
+            for (let i = 0; i < pos.count; i++) {
+                const x = pos.getX(i);
+                let y = pos.getY(i);
+                const z = pos.getZ(i);
+                const normZ = isBow ? (z - minZ) / len : (maxZ - z) / len;
+                
+                let taper = 1.0 - (Math.pow(normZ, 2.5) * 0.95);
+                if(taper < 0.05) taper = 0.05;
+                
+                let vShape = 1.0;
+                if(y < 0) {
+                    vShape = 1.0 - (Math.abs(x) * 0.15); 
+                    vShape *= 0.8; 
+                }
+
+                pos.setX(i, x * taper * vShape);
+                const lift = Math.pow(normZ, 2) * 1.8;
+                pos.setY(i, y + lift);
+            }
+            geo.computeVertexNormals();
+        }
+
+        // Main Hull
+        const midLength = 6;
+        const midGeo = new THREE.BoxGeometry(3.5, 2.5, midLength, 8, 6, 12);
+        const mPos = midGeo.attributes.position;
+        for(let i=0; i<mPos.count; i++){ 
+            if(mPos.getY(i) < 0) {
+                 const x = mPos.getX(i);
+                 mPos.setX(i, x * 0.8);
+                 mPos.setY(i, mPos.getY(i) + Math.abs(x)*0.2); 
+            }
+        }
+        midGeo.computeVertexNormals();
+        const midHull = new THREE.Mesh(midGeo, matWoodMed);
+        midHull.position.set(0, 0.5, 0); midHull.castShadow = true; shipGeo.add(midHull);
+
+        // Cannons
+        for(let i=0; i<3; i++) {
+            const cZ = -1.5 + i * 1.5;
+            const cannonL = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 1, 8), matCannon);
+            cannonL.rotation.z = Math.PI/2; cannonL.position.set(-1.6, 0.8, cZ);
+            midHull.add(cannonL);
+            const cannonR = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 1, 8), matCannon);
+            cannonR.rotation.z = -Math.PI/2; cannonR.position.set(1.6, 0.8, cZ);
+            midHull.add(cannonR);
+        }
+
+        // Bow
+        const bowLength = 5.5;
+        const bowGeo = new THREE.BoxGeometry(3.5, 2.5, bowLength, 8, 6, 16);
+        deformGeometry(bowGeo, true);
+        const bow = new THREE.Mesh(bowGeo, matWoodMed);
+        bow.position.set(0, 0.5, midLength/2 + bowLength/2 - 0.1); bow.castShadow = true; shipGeo.add(bow);
+
+        // Stern
+        const sternLength = 3.5;
+        const sternGeo = new THREE.BoxGeometry(3.5, 2.5, sternLength, 8, 6, 12);
+        deformGeometry(sternGeo, false);
+        const stern = new THREE.Mesh(sternGeo, matWoodMed);
+        stern.position.set(0, 0.5, -midLength/2 - sternLength/2 + 0.1); stern.castShadow = true; shipGeo.add(stern);
+
+        // Transom
+        const transom = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.2, 0.5), matWoodDark);
+        transom.position.set(0, 1.5, -midLength/2 - sternLength + 0.5);
+        shipGeo.add(transom);
+
+        // Deck
+        const deck = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.2, 13), new THREE.MeshStandardMaterial({ color: 0xA1887F, roughness: 1.0 }));
+        deck.position.set(0, 1.6, 0); deck.receiveShadow = true; shipGeo.add(deck);
+
+        // Railings
+        const railGeo = new THREE.BoxGeometry(0.2, 0.4, 1);
+        for(let z = -5; z <= 5; z+=1.5) {
+             const postL = new THREE.Mesh(railGeo, matWoodLight);
+             postL.position.set(1.65, 1.9, z); shipGeo.add(postL);
+             const postR = new THREE.Mesh(railGeo, matWoodLight);
+             postR.position.set(-1.65, 1.9, z); shipGeo.add(postR);
+        }
+        const topRailL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 12), matTrim);
+        topRailL.position.set(1.65, 2.15, 0); shipGeo.add(topRailL);
+        const topRailR = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 12), matTrim);
+        topRailR.position.set(-1.65, 2.15, 0); shipGeo.add(topRailR);
+
+        // Bowsprit
+        const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.4, 9, 8), matWoodDark);
+        bowsprit.rotation.x = -Math.PI / 2 - 0.2; bowsprit.position.set(0, 2.8, 7.5); shipGeo.add(bowsprit);
+
+        // Cabin
+        const cabinGroup = new THREE.Group();
+        cabinGroup.position.set(0, 2.0, -4);
+        const cabinMain = new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.8, 3), matWoodDark);
+        cabinGroup.add(cabinMain);
+        const cabinRoof = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.2, 3.2), matWoodLight);
+        cabinRoof.position.y = 1.0;
+        cabinGroup.add(cabinRoof);
+        shipGeo.add(cabinGroup);
+
+        // Helper for rigging
+        function addRigging(mastX, mastH, mastZ) {
+             const points = [];
+             // Sides
+             points.push(new THREE.Vector3(mastX, mastH, mastZ));
+             points.push(new THREE.Vector3(mastX - 1.6, 2, mastZ + 0.5));
+             
+             points.push(new THREE.Vector3(mastX, mastH, mastZ));
+             points.push(new THREE.Vector3(mastX + 1.6, 2, mastZ + 0.5));
+             
+             // Backstay
+             points.push(new THREE.Vector3(mastX, mastH, mastZ));
+             points.push(new THREE.Vector3(mastX, 2, mastZ - 2.5));
+
+             const geo = new THREE.BufferGeometry().setFromPoints(points);
+             shipGeo.add(new THREE.LineSegments(geo, matRope));
+        }
+
+        // Masts & Sails
+        function buildMast(x, z, height, scale, sailCount) {
+            const mastGroup = new THREE.Group();
+            mastGroup.position.set(x, 0, z);
+            
+            // Pole
+            const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15*scale, 0.3*scale, height, 8), matWoodLight);
+            pole.position.y = height/2 + 1; pole.castShadow = true; mastGroup.add(pole);
+            
+            // Crows Nest
+            const nest = new THREE.Mesh(new THREE.CylinderGeometry(0.8*scale, 0.4*scale, 0.6, 6), matWoodDark);
+            nest.position.y = height * 0.8 + 1; mastGroup.add(nest);
+
+            for(let i=0; i<sailCount; i++) {
+                const y = height * (0.35 + i*0.25) + 1;
+                const width = 4.5 * scale * (1 - i*0.15);
+                
+                // Yard
+                const yard = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, width, 8), matWoodDark);
+                yard.rotation.z = Math.PI/2; yard.position.y = y; mastGroup.add(yard);
+                
+                // Sail
+                const sailH = 2.5*scale;
+                const sailGeo = new THREE.PlaneGeometry(width, sailH, 10, 10);
+                const sPos = sailGeo.attributes.position;
+                
+                // Static curve
+                for(let v=0; v<sPos.count; v++) {
+                    const px = sPos.getX(v);
+                    const py = sPos.getY(v);
+                    const bulge = Math.sin((py/sailH + 0.5) * Math.PI) * Math.cos(px/(width*0.6)) * 0.6;
+                    sPos.setZ(v, bulge + 0.2);
+                }
+                sailGeo.computeVertexNormals();
+                
+                const sail = new THREE.Mesh(sailGeo, matSail);
+                sail.position.set(0, y - sailH/2, 0.1); 
+                sail.castShadow = true;
+                sail.side = THREE.DoubleSide;
+                sail.name = "sail"; // Tag for animation
+                mastGroup.add(sail);
+            }
+            shipGeo.add(mastGroup);
+            
+            // Add ropes for this mast
+            addRigging(x, height, z);
+        }
+
+        buildMast(0, 0, 11, 1, 3); 
+        buildMast(0, 4, 9, 0.9, 2); 
+        buildMast(0, -3.5, 8.5, 0.85, 2);
+
+        // Add Flag - Attached to the main mast (height ~11)
+        const flagGroup = createFlag(isPlayer);
+        flagGroup.position.set(0, 11.5, 0); 
+        flagGroup.scale.set(0.5, 0.5, 0.5); 
+        flagGroup.rotation.y = Math.PI/2; 
+        shipGeo.add(flagGroup);
+
+        if(isPlayer) {
+            const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 64;
+            const ctx = canvas.getContext('2d'); ctx.fillStyle = '#3e2723'; ctx.fillRect(0,0,256,64);
+            ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 4; ctx.strokeRect(4,4,248,56);
+            ctx.fillStyle = '#FFD700'; ctx.font = 'bold 40px serif'; ctx.textAlign = 'center'; ctx.textBaseline='middle'; 
+            ctx.fillText('THEIS', 128, 32);
+            const plate = new THREE.Mesh(new THREE.PlaneGeometry(3, 0.8), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true }));
+            plate.position.set(0, 2.5, -5.2); plate.rotation.y = Math.PI; plate.rotation.x = -0.1; shipGeo.add(plate);
+        } else {
+            const canvas = document.createElement('canvas'); canvas.width = 128; canvas.height = 128;
+            const ctx = canvas.getContext('2d'); ctx.fillStyle = '#111'; ctx.fillRect(0,0,128,128);
+            ctx.fillStyle = '#fff'; ctx.font = '80px sans-serif'; ctx.textAlign='center'; ctx.fillText('☠️', 64, 90);
+            const plate = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshStandardMaterial({map:new THREE.CanvasTexture(canvas), roughness: 0.8}));
+            plate.position.set(0, 3.5, 6); shipGeo.add(plate);
+        }
+        return group;
+    }
+
+    function createPlayerShip() { playerShip = createShipMesh(true); scene.add(playerShip); }
+
+    function createFlag(isNorwegian) {
+        const group = new THREE.Group();
+        const poleH = 6;
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, poleH), new THREE.MeshPhongMaterial({color: 0x222}));
+        pole.position.y = poleH / 2; group.add(pole);
+        const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 160; const ctx = canvas.getContext('2d');
+        if (isNorwegian) {
+            ctx.fillStyle = '#ba0c2f'; ctx.fillRect(0,0,256,160);
+            ctx.fillStyle = '#ffffff'; ctx.fillRect(60,0,40,160); ctx.fillRect(0,60,256,40);
+            ctx.fillStyle = '#00205b'; ctx.fillRect(72,0,16,160); ctx.fillRect(0,72,256,16);
+        } else {
+            ctx.fillStyle = 'black'; ctx.fillRect(0,0,256,160); ctx.fillStyle = 'white'; 
+            ctx.beginPath(); ctx.arc(128, 80, 40, 0, Math.PI*2); ctx.fill(); 
+        }
+        const tex = new THREE.CanvasTexture(canvas);
+        const cloth = new THREE.Mesh(new THREE.PlaneGeometry(6, 4, 15, 10), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+        cloth.position.set(3, poleH - 2, 0); 
+        cloth.name = "flagCloth"; 
+        group.add(cloth);
+        return group;
+    }
+
+    // --- ENVIRONMENT HELPERS ---
+    
+    function createPalm(scale = 1) {
+        const group = new THREE.Group();
+        group.scale.setScalar(scale);
+
+        // Trunk
+        const trunkGeo = new THREE.CylinderGeometry(0.4, 0.6, 10, 5);
+        trunkGeo.translate(0, 5, 0); 
+        const trunk = new THREE.Mesh(trunkGeo, new THREE.MeshStandardMaterial({color: 0x5d4037, flatShading:true}));
+        trunk.rotation.z = 0.2; 
+        trunk.castShadow = true;
+        group.add(trunk);
+
+        // Leaves
+        const leafGeo = new THREE.ConeGeometry(2, 8, 3);
+        leafGeo.translate(0, 4, 0);
+        leafGeo.rotateX(Math.PI / 1.8); 
+        const leafMat = new THREE.MeshStandardMaterial({color: 0x2e7d32, flatShading:true});
+
+        for(let i=0; i<6; i++) {
+            const leaf = new THREE.Mesh(leafGeo, leafMat);
+            leaf.position.set(-2.0, 9.5, 0);
+            leaf.rotation.y = (i/6) * Math.PI * 2;
+            leaf.castShadow = true;
+            group.add(leaf);
+        }
+        return group;
+    }
+
+    function createRock(scale) {
+        const rock = new THREE.Mesh(
+            new THREE.DodecahedronGeometry(scale, 0),
+            new THREE.MeshStandardMaterial({color: 0x757575, flatShading:true})
+        );
+        rock.castShadow = true;
+        rock.receiveShadow = true;
+        return rock;
+    }
+
+    // --- ENVIRONMENT ---
+    function createEnvironment() {
+        obstacles.forEach(o => scene.remove(o.mesh)); obstacles = [];
+        pirates.forEach(p => scene.remove(p.mesh)); pirates = [];
+        seagulls.forEach(s => scene.remove(s.group)); seagulls = [];
+        wakeParticles.forEach(w => scene.remove(w.mesh)); wakeParticles = [];
+        
+        if(chestGroup) scene.remove(chestGroup);
+        if(clouds) clouds.forEach(c => scene.remove(c)); clouds = [];
+        for(let i=0; i<10; i++) createIsland();
+        createSkilsoIsland();
+        for(let i=0; i<4; i++) createPirate();
+        for(let i=0; i<20; i++) createCloud();
+        for(let i=0; i<15; i++) createSeagull();
+    }
+
+    function createSkilsoIsland() {
+        const group = new THREE.Group();
+        group.position.set(dockArea.x, 0, dockArea.z - 230); 
+
+        // --- Terrain ---
+        // Sand Beach Layer
+        const beachGeo = new THREE.CylinderGeometry(140, 160, 5, 9);
+        const beach = new THREE.Mesh(beachGeo, new THREE.MeshStandardMaterial({color: 0xe6d5ac, flatShading:true}));
+        beach.position.y = 0;
+        beach.receiveShadow = true;
+        group.add(beach);
+
+        // Grassy Hill (Base)
+        const land = new THREE.Mesh(new THREE.ConeGeometry(130, 70, 9), new THREE.MeshStandardMaterial({color: 0x2e7d32, flatShading:true}));
+        land.position.y = 25;
+        land.castShadow = true;
+        land.receiveShadow = true;
+        group.add(land);
+
+        // --- SKULL MOUNTAIN ---
+        const boneMat = new THREE.MeshStandardMaterial({color: 0xdcdcdc, flatShading:true}); 
+        
+        const skullGroup = new THREE.Group();
+        skullGroup.position.set(0, 55, 0); // Sit high on top of hill
+        
+        // Cranium
+        const cranium = new THREE.Mesh(new THREE.DodecahedronGeometry(40), boneMat); 
+        skullGroup.add(cranium);
+        
+        // Jaw / Cheekbones
+        const cheekL = new THREE.Mesh(new THREE.DodecahedronGeometry(15), boneMat);
+        cheekL.position.set(-25, -20, 15);
+        skullGroup.add(cheekL);
+        const cheekR = new THREE.Mesh(new THREE.DodecahedronGeometry(15), boneMat);
+        cheekR.position.set(25, -20, 15);
+        skullGroup.add(cheekR);
+
+        // Eyes (Cavities)
+        const eyeMat = new THREE.MeshBasicMaterial({color:0x111111});
+        const eyeL = new THREE.Mesh(new THREE.SphereGeometry(12, 8, 8), eyeMat); 
+        eyeL.position.set(-15, -5, 32); 
+        eyeL.scale.z = 0.5; // Flatten
+        skullGroup.add(eyeL);
+        
+        const eyeR = new THREE.Mesh(new THREE.SphereGeometry(12, 8, 8), eyeMat); 
+        eyeR.position.set(15, -5, 32); 
+        eyeR.scale.z = 0.5;
+        skullGroup.add(eyeR);
+
+        // Nose
+        const nose = new THREE.Mesh(new THREE.ConeGeometry(5, 15, 3), eyeMat);
+        nose.position.set(0, -20, 35);
+        nose.rotation.x = 0.5;
+        skullGroup.add(nose);
+
+        group.add(skullGroup);
+
+        // --- Buildings ---
+        const houseMat = new THREE.MeshStandardMaterial({color: 0xffe0b2}); 
+        const roofMat = new THREE.MeshStandardMaterial({color: 0xa52a2a}); 
+
+        function addHouse(hx, hz, rot, scale=1) {
+            const hGroup = new THREE.Group();
+            hGroup.position.set(hx, 5, hz);
+            hGroup.rotation.y = rot;
+            hGroup.scale.setScalar(scale);
+            
+            const body = new THREE.Mesh(new THREE.BoxGeometry(15, 10, 10), houseMat);
+            body.position.y = 5; body.castShadow = true; hGroup.add(body);
+            
+            const roof = new THREE.Mesh(new THREE.ConeGeometry(10, 6, 4), roofMat);
+            roof.position.y = 13; roof.rotation.y = Math.PI/4; hGroup.add(roof);
+            
+            group.add(hGroup);
+        }
+
+        // Expanded Village
+        addHouse(-40, 60, 0.5);
+        addHouse(50, 50, -0.5);
+        addHouse(-60, 20, 0.2);
+        addHouse(60, 10, -0.8);
+        addHouse(0, 75, 0, 1.2); // Main hall
+        addHouse(-25, 85, 0.3, 0.8);
+        addHouse(25, 80, -0.3, 0.8);
+
+        // --- Palms ---
+        for(let i=0; i<12; i++) {
+            const tree = createPalm(1.5 + Math.random()*0.5);
+            const angle = Math.random() * Math.PI * 2; 
+            const dist = 90 + Math.random() * 40; 
+            // Don't place palms directly on the dock path (Z axis approx)
+            if(dist > 130 && Math.abs(Math.sin(angle)) < 0.2 && Math.cos(angle) > 0) continue; 
+            
+            tree.position.set(Math.cos(angle)*dist, 2, Math.sin(angle)*dist);
+            tree.rotation.y = Math.random() * Math.PI;
+            group.add(tree);
+        }
+
+        // --- Rocks ---
+        for(let i=0; i<12; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            // Keep front clear for docking
+            // Player approaches from +Z relative to island
+            if(Math.sin(angle) > 0.5 && Math.abs(Math.cos(angle)) < 0.5) continue; 
+
+            const rock = createRock(8 + Math.random()*12);
+            const dist = 145 + Math.random() * 20;
+            rock.position.set(Math.cos(angle)*dist, 0, Math.sin(angle)*dist);
+            group.add(rock);
+        }
+
+        // Fort Towers
+        const fortMat = new THREE.MeshPhongMaterial({color:0x8d6e63});
+        const tower1 = new THREE.Mesh(new THREE.CylinderGeometry(8, 12, 35, 6), fortMat);
+        tower1.position.set(-70, 15, 30); group.add(tower1);
+        
+        const tower2 = new THREE.Mesh(new THREE.CylinderGeometry(8, 12, 35, 6), fortMat);
+        tower2.position.set(70, 15, 30); group.add(tower2);
+
+        scene.add(group);
+        obstacles.push({mesh:group, radius: 150}); 
+
+        createDock();
+    }
+
+    function createIsland() {
+        const x = (Math.random() - 0.5) * 2500; const z = (Math.random() - 0.5) * 2500;
+        if (Math.abs(x) < 300 && Math.abs(z - 800) < 300) return;
+        if (Math.abs(x) < 300 && Math.abs(z + 800) < 300) return;
+        
+        const size = 60 + Math.random() * 60;
+        const group = new THREE.Group();
+        group.position.set(x, 0, z);
+
+        const sand = new THREE.Mesh(new THREE.CylinderGeometry(size, size + 10, 4, 8), new THREE.MeshStandardMaterial({color: 0xe6d5ac, flatShading:true}));
+        sand.position.y = 0; sand.receiveShadow = true; group.add(sand);
+
+        const grass = new THREE.Mesh(new THREE.ConeGeometry(size * 0.8, 30, 7), new THREE.MeshStandardMaterial({color: 0x4caf50, flatShading:true}));
+        grass.position.y = 15; grass.castShadow = true; grass.receiveShadow = true; group.add(grass);
+
+        const numRocks = Math.floor(Math.random() * 5) + 3;
+        for(let i=0; i<numRocks; i++) {
+            const rScale = 5 + Math.random() * 10;
+            const rock = createRock(rScale);
+            const angle = Math.random() * Math.PI * 2;
+            const dist = size * (0.8 + Math.random() * 0.4); 
+            rock.position.set(Math.cos(angle)*dist, 0, Math.sin(angle)*dist);
+            group.add(rock);
+        }
+
+        const numTrees = Math.floor(Math.random() * 4) + 2;
+        for(let i=0; i<numTrees; i++) {
+            const tree = createPalm(1 + Math.random()*0.5);
+            const angle = Math.random() * Math.PI * 2;
+            const dist = size * 0.5 * Math.random();
+            tree.position.set(Math.cos(angle)*dist, 10, Math.sin(angle)*dist);
+            tree.rotation.y = Math.random() * Math.PI;
+            group.add(tree);
+        }
+
+        scene.add(group);
+        obstacles.push({ mesh: group, radius: size + 10 });
+    }
+
+    function createCloud() {
+        const group = new THREE.Group();
+        const mat = new THREE.MeshPhongMaterial({ color: 0xffffff, flatShading: true, opacity:0.9, transparent:true });
+        for(let i=0; i<5; i++) {
+            const size = 30 + Math.random() * 20;
+            const cube = new THREE.Mesh(new THREE.BoxGeometry(size, size*0.6, size), mat);
+            cube.position.set((Math.random()-0.5)*50, (Math.random()-0.5)*15, (Math.random()-0.5)*50);
+            group.add(cube);
+        }
+        group.position.set((Math.random()-0.5)*3000, 200 + Math.random()*200, (Math.random()-0.5)*3000);
+        scene.add(group); clouds.push(group);
+    }
+
+    function createSeagull() {
+        const group = new THREE.Group();
+        const wingGeo = new THREE.BoxGeometry(3, 0.5, 1);
+        const lWing = new THREE.Mesh(wingGeo, new THREE.MeshBasicMaterial({color:0xffffff})); lWing.position.x = -1.5;
+        const rWing = new THREE.Mesh(wingGeo, new THREE.MeshBasicMaterial({color:0xffffff})); rWing.position.x = 1.5;
+        group.add(lWing); group.add(rWing);
+        const angle = Math.random() * Math.PI * 2;
+        const radius = 500 + Math.random() * 1000;
+        group.position.set(Math.cos(angle)*radius, 40 + Math.random()*60, Math.sin(angle)*radius);
+        scene.add(group);
+        seagulls.push({group, lWing, rWing, speed: 0.5 + Math.random()*0.5, angle: angle, radius: radius});
+    }
+
+    function createDock() {
+        const group = new THREE.Group();
+        group.position.set(dockArea.x, 0, dockArea.z);
+
+        const wood = new THREE.MeshPhongMaterial({color: 0x5d4037});
+        
+        const plankCount = 10;
+        for(let i=0; i<plankCount; i++) {
+            const p = new THREE.Mesh(new THREE.BoxGeometry(90, 4, 8), wood);
+            p.position.set(0, 0, -45 + i*10);
+            p.receiveShadow = true;
+            group.add(p);
+        }
+        
+        const support = new THREE.Mesh(new THREE.BoxGeometry(4, 10, 100), wood);
+        const sl = support.clone(); sl.position.set(-45, -2, 0); group.add(sl);
+        const sr = support.clone(); sr.position.set(45, -2, 0); group.add(sr);
+
+        function createBarrel(x, z) {
+            const bGroup = new THREE.Group();
+            const bMat = new THREE.MeshPhongMaterial({color: 0x4e342e});
+            const body = new THREE.Mesh(new THREE.CylinderGeometry(2, 2.2, 5, 8), bMat);
+            bGroup.add(body);
+            const ringMat = new THREE.MeshPhongMaterial({color: 0x222222});
+            const ring = new THREE.Mesh(new THREE.TorusGeometry(2.1, 0.1, 8, 12), ringMat);
+            ring.rotation.x = Math.PI/2;
+            const r1 = ring.clone(); r1.position.y = 1.5; bGroup.add(r1);
+            const r2 = ring.clone(); r2.position.y = -1.5; bGroup.add(r2);
+            bGroup.position.set(x, 4.5, z);
+            group.add(bGroup);
+        }
+        createBarrel(-30, -30); createBarrel(-34, -30); createBarrel(-32, -35);
+
+        function createRope(x, z) {
+            const rope = new THREE.Mesh(new THREE.TorusGeometry(3, 0.6, 8, 20), new THREE.MeshPhongMaterial({color: 0xd7ccc8}));
+            rope.rotation.x = Math.PI/2;
+            rope.position.set(x, 2.5, z);
+            group.add(rope);
+        }
+        createRope(30, -20); createRope(28, -25);
+
+        const flagPole = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 30), wood);
+        flagPole.position.set(38, 15, 40);
+        group.add(flagPole);
+
+        const fCanvas = document.createElement('canvas'); fCanvas.width = 256; fCanvas.height = 128;
+        const fCtx = fCanvas.getContext('2d');
+        fCtx.fillStyle = '#d4af37'; fCtx.fillRect(0,0,256,128);
+        fCtx.fillStyle = '#3e2723'; fCtx.font = 'bold 80px serif'; fCtx.textAlign='center'; fCtx.textBaseline='middle';
+        fCtx.fillText('MÅL', 128, 64);
+        const fSign = new THREE.Mesh(new THREE.PlaneGeometry(18, 10), new THREE.MeshBasicMaterial({map: new THREE.CanvasTexture(fCanvas), side: THREE.DoubleSide}));
+        fSign.position.set(47, 25, 40);
+        group.add(fSign);
+
+        const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0,0,256,64);
+        ctx.fillStyle = '#2e7d32'; ctx.font = 'bold 50px serif'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('SKILSØ', 128, 32);
+        const sign = new THREE.Mesh(new THREE.PlaneGeometry(60, 15), new THREE.MeshBasicMaterial({map: new THREE.CanvasTexture(canvas), transparent:true}));
+        sign.position.set(0, 60, -100); group.add(sign);
+
+        scene.add(group);
+        createChest(group);
+    }
+
+    function createChest(dockGroup) {
+        chestGroup = new THREE.Group(); chestGroup.position.set(0, 5, -40); chestGroup.rotation.y = 0; 
+        const chestMat = new THREE.MeshPhongMaterial({ color: 0x8b4513 });
+        const base = new THREE.Mesh(new THREE.BoxGeometry(16, 10, 10), chestMat); base.position.y = 5; chestGroup.add(base);
+        chestLid = new THREE.Group(); chestLid.position.set(0, 10, -5); 
+        const lid = new THREE.Mesh(new THREE.CylinderGeometry(8, 8, 16, 16, 1, false, 0, Math.PI), chestMat);
+        lid.rotateZ(Math.PI / 2); lid.position.set(0, 0, 5); chestLid.add(lid);
+        chestGroup.add(chestLid); dockGroup.add(chestGroup);
+        const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 256;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = "rgba(0, 0, 0, 0.7)"; ctx.fillRect(20, 20, 472, 216);
+        ctx.shadowColor = "black"; ctx.shadowBlur = 4; ctx.fillStyle = "#ffd700"; 
+        ctx.font = "bold 60px serif"; ctx.textAlign = "center";
+        ctx.fillText("Gratulerer med", 256, 100); ctx.fillText("dagen Theis!", 256, 180);
+        const mat = new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, side: THREE.DoubleSide });
+        chestText = new THREE.Mesh(new THREE.PlaneGeometry(60, 30), mat);
+        chestText.scale.x = 1; 
+        chestText.position.set(0, 10, 0); chestText.visible = false; chestGroup.add(chestText);
+    }
+
+    function createPirate() {
+        const mesh = createShipMesh(false);
+        mesh.position.set((Math.random()-0.5)*1200, 0, (Math.random()-0.5)*1000);
+        scene.add(mesh);
+        pirates.push({ mesh: mesh, vx: 0, vz: 0, speed: 0.6 + Math.random()*0.4, reload: Math.random() * 200 });
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        const time = clock.getElapsedTime();
+        const positionAttribute = water.geometry.attributes.position;
+        const originalPosition = water.geometry.userData.originalPosition;
+        for (let i = 0; i < positionAttribute.count; i++) {
+            const x = originalPosition.getX(i);
+            const zCoord = originalPosition.getZ(i); 
+            // Fixed: Waves are smaller (0.6, 0.6, 0.3 amplitudes)
+            const waveHeight = Math.sin(x * 0.02 + time * 1.0) * 0.6 + Math.sin(zCoord * 0.015 + time * 0.8) * 0.6 + Math.sin((x + zCoord) * 0.05 + time * 2) * 0.3; 
+            positionAttribute.setY(i, waveHeight);
+        }
+        positionAttribute.needsUpdate = true;
+        water.geometry.computeVertexNormals();
+
+        // Animate Flags and Sails in the Scene
+        scene.traverse((object) => {
+            if (object.name === 'flagCloth') {
+                const pos = object.geometry.attributes.position;
+                for(let i=0; i<pos.count; i++) {
+                    const x = pos.getX(i);
+                    // Flag pinned at x=-3 (local coords), wave amplitude increases with distance
+                    const dist = x + 3; 
+                    const wave = Math.sin(dist * 0.8 - time * 6) * (dist * 0.15);
+                    const flutter = Math.sin(dist * 2.0 - time * 15) * (dist * 0.05); // High freq flutter
+                    pos.setZ(i, wave + flutter);
+                }
+                pos.needsUpdate = true;
+            }
+        });
+
+        if(playerShip) {
+            const waveH = Math.sin(playerShip.position.x * 0.02 + time * 1.0) * 0.6 + Math.sin(playerShip.position.z * 0.015 + time * 0.8) * 0.6;
+            playerShip.position.y = waveH + 2; 
+            playerShip.rotation.z = Math.sin(time + playerShip.position.x*0.01) * 0.05;
+            playerShip.rotation.x = Math.sin(time*0.8 + playerShip.position.z*0.01) * 0.04;
+        }
+
+        // Stern Wave Logic
+        if (gameRunning && shipStats.speed > 0.1) {
+            const wakeGeo = new THREE.PlaneGeometry(4, 4);
+            const wakeMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+            const wake = new THREE.Mesh(wakeGeo, wakeMat);
+            const offset = 12; 
+            const wx = playerShip.position.x + Math.sin(playerShip.rotation.y) * offset;
+            const wz = playerShip.position.z + Math.cos(playerShip.rotation.y) * offset;
+            
+            wake.position.set(wx, 0.2, wz);
+            wake.rotation.x = -Math.PI / 2;
+            wake.rotation.z = Math.random() * Math.PI;
+            scene.add(wake);
+            wakeParticles.push({ mesh: wake, life: 1.0 });
+        }
+
+        // Update Wakes
+        for (let i = wakeParticles.length - 1; i >= 0; i--) {
+            const p = wakeParticles[i];
+            p.life -= 0.02;
+            p.mesh.material.opacity = p.life * 0.4;
+            p.mesh.scale.setScalar(1 + (1 - p.life) * 2);
+            if (p.life <= 0) {
+                scene.remove(p.mesh);
+                wakeParticles.splice(i, 1);
+            }
+        }
+
+        seagulls.forEach(s => {
+            s.angle += s.speed * 0.005;
+            s.group.position.x = Math.cos(s.angle) * s.radius;
+            s.group.position.z = Math.sin(s.angle) * s.radius;
+            s.group.lookAt(Math.cos(s.angle + 0.1)*s.radius, s.group.position.y, Math.sin(s.angle + 0.1)*s.radius);
+            const flap = Math.sin(time * 10);
+            s.lWing.rotation.z = flap * 0.5; s.rWing.rotation.z = -flap * 0.5;
+        });
+
+        if (gameRunning) {
+            if (!gameWon) {
+                updatePlayerMovement();
+                updatePirates(time);
+                updateProjectiles();
+                checkCollisions();
+                const offset = new THREE.Vector3(0, 60, 120);
+                offset.applyMatrix4(playerShip.matrixWorld);
+                camera.position.lerp(offset, 0.1); camera.lookAt(playerShip.position);
+            } else {
+                const targetPos = new THREE.Vector3(dockArea.x + 50, 40, dockArea.z + 100);
+                camera.position.lerp(targetPos, 0.05); camera.lookAt(dockArea.x, 25, dockArea.z - 60);
+                if (chestLid.rotation.x > -Math.PI / 2) { chestLid.rotation.x -= 0.05; } else { chestText.visible = true; if(chestText.position.y < 35) chestText.position.y += 0.2; }
+            }
+        } else { if(playerShip) playerShip.rotation.y += 0.005; }
+        drawMinimap(); renderer.render(scene, camera);
+    }
+
+    function drawMinimap() {
+        if(!playerShip) return;
+        const ctx = minimapCtx; const w = 200, h = 200;
+        ctx.clearRect(0,0,w,h); ctx.fillStyle = "#e6d5ac"; ctx.fillRect(0,0,w,h); 
+        const scale = 100 / mapSize; const center = 100;
+        function toMap(pos) { return { x: center + pos.x * scale, y: center + pos.z * scale }; }
+        ctx.fillStyle = "#8d6e63"; obstacles.forEach(ob => { const p = toMap(ob.mesh.position); ctx.beginPath(); ctx.arc(p.x, p.y, ob.radius * scale, 0, Math.PI*2); ctx.fill(); });
+        const d = toMap({x: dockArea.x, z: dockArea.z}); ctx.strokeStyle = "#2e7d32"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(d.x-5, d.y-5); ctx.lineTo(d.x+5, d.y+5); ctx.moveTo(d.x+5, d.y-5); ctx.lineTo(d.x-5, d.y+5); ctx.stroke();
+        ctx.fillStyle = "#d32f2f"; pirates.forEach(pi => { const p = toMap(pi.mesh.position); ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI*2); ctx.fill(); });
+        const pp = toMap(playerShip.position); ctx.save(); ctx.translate(pp.x, pp.y); ctx.rotate(-playerShip.rotation.y); 
+        ctx.fillStyle = "#1976d2"; ctx.beginPath(); ctx.moveTo(0, -6); ctx.lineTo(4, 4); ctx.lineTo(-4, 4); ctx.fill(); ctx.restore();
+    }
+
+    function updatePlayerMovement() {
+        if (keys.up) shipStats.speed += shipStats.acceleration; else shipStats.speed *= shipStats.friction;
+        shipStats.speed = Math.min(shipStats.speed, shipStats.maxSpeed);
+        if (keys.left && shipStats.speed > 0.1) shipStats.angle += shipStats.rotationSpeed;
+        if (keys.right && shipStats.speed > 0.1) shipStats.angle -= shipStats.rotationSpeed;
+        playerShip.rotation.y = shipStats.angle;
+        playerShip.position.x -= Math.sin(shipStats.angle) * shipStats.speed;
+        playerShip.position.z -= Math.cos(shipStats.angle) * shipStats.speed;
+        document.getElementById('speed-gauge').innerText = (shipStats.speed * 10).toFixed(1) + " kts";
+    }
+
+    function updatePirates(time) {
+        pirates.forEach(p => {
+            const dist = p.mesh.position.distanceTo(playerShip.position);
+            if(dist < 500) {
+                const dx = playerShip.position.x - p.mesh.position.x;
+                const dz = playerShip.position.z - p.mesh.position.z;
+                const targetAngle = Math.atan2(dx, dz); 
+                p.mesh.rotation.y = targetAngle;
+                p.mesh.position.x += Math.sin(targetAngle) * p.speed;
+                p.mesh.position.z += Math.cos(targetAngle) * p.speed;
+            }
+            p.mesh.rotation.z = Math.sin(time*2 + p.mesh.position.x)*0.05;
+            if(Math.abs(p.mesh.position.x) > 1400) p.mesh.position.x *= -0.9; 
+            if(Math.abs(p.mesh.position.z) > 1400) p.mesh.position.z *= -0.9;
+            p.reload--;
+            if(p.reload <= 0 && dist < 400) {
+                shootCannon(p.mesh.position, playerShip.position);
+                p.reload = 250;
+            }
+        });
+    }
+
+    function shootCannon(from, to) {
+        const ball = new THREE.Mesh(new THREE.SphereGeometry(1), new THREE.MeshBasicMaterial({color:0}));
+        ball.position.copy(from); ball.position.y += 10;
+        const vel = new THREE.Vector3().subVectors(to, from).normalize().multiplyScalar(2.5);
+        scene.add(ball); cannonballs.push({mesh:ball, vel:vel, life:100});
+    }
+
+    function updateProjectiles() {
+        for(let i=cannonballs.length-1; i>=0; i--) {
+            const b = cannonballs[i]; b.mesh.position.add(b.vel); b.life--;
+            if(b.life <= 0) { scene.remove(b.mesh); cannonballs.splice(i,1); }
+        }
+    }
+
+    function checkCollisions() {
+        for(let o of obstacles) { if(playerShip.position.distanceTo(o.mesh.position) < o.radius + 10) { shipStats.speed = -0.5; takeDamage(); } }
+        for(let i=cannonballs.length-1; i>=0; i--) { if(playerShip.position.distanceTo(cannonballs[i].mesh.position) < 15) { takeDamage(); scene.remove(cannonballs[i].mesh); cannonballs.splice(i,1); } }
+        const p = playerShip.position;
+        if (Math.abs(p.x - dockArea.x) < dockArea.width/2 && Math.abs(p.z - dockArea.z) < dockArea.depth/2) {
+            if(shipStats.speed * 10 < 3.0) winGame();
+        }
+    }
+
+    function takeDamage() {
+        timeLeft -= 10;
+        const el = document.getElementById('damage-flash'); el.style.opacity = 0.5; setTimeout(()=>el.style.opacity=0, 200);
+        updateTimer();
+    }
+    function updateTimer() { document.getElementById('timer').innerText = `⏱ ${Math.max(0, timeLeft)}s`; if(timeLeft <= 0) endGame(); }
+
+    function startGame() {
+        playerShip.position.set(0,0,800); playerShip.rotation.set(0,0,0); shipStats.speed = 0; shipStats.angle = 0;
+        timeLeft = 90; gameRunning = true; gameWon = false;
+        document.getElementById('start-screen').classList.add('hidden');
+        document.getElementById('game-over-screen').classList.add('hidden');
+        chestLid.rotation.x = 0; chestText.visible = false; chestText.position.y = 10;
+        clearInterval(timerInterval);
+        timerInterval = setInterval(()=>{ if(!gameRunning || gameWon) return; timeLeft--; updateTimer(); }, 1000);
+    }
+
+    function winGame() { gameWon = true; gameRunning = true; clearInterval(timerInterval); }
+    function endGame() { gameRunning = false; clearInterval(timerInterval); document.getElementById('game-over-screen').classList.remove('hidden'); }
+    function onWindowResize() { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); }
+    function onKeyDown(e) { if(e.key === 'ArrowUp') keys.up = true; if(e.key === 'ArrowLeft') keys.left = true; if(e.key === 'ArrowRight') keys.right = true; }
+    function onKeyUp(e) { if(e.key === 'ArrowUp') keys.up = false; if(e.key === 'ArrowLeft') keys.left = false; if(e.key === 'ArrowRight') keys.right = false; }
+    function setupTouch(id, k) { const el = document.getElementById(id); el.addEventListener('touchstart', (e)=>{ e.preventDefault(); keys[k]=true; }); el.addEventListener('touchend', (e)=>{ e.preventDefault(); keys[k]=false; }); }
+
+    document.getElementById('start-btn').addEventListener('click', startGame);
+    document.getElementById('retry-btn').addEventListener('click', startGame);
+
+    init();
+</script>
+</body>
+</html>
